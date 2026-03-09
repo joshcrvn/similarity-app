@@ -249,6 +249,28 @@ app.get("/api/spotify/similar-tracks/:trackId", async (req, res) => {
   }
 });
 
+app.get("/api/lastfm/tags", async (req, res) => {
+  const { artist, track } = req.query;
+  if (!artist || !track) {
+    return res.status(400).json({ error: "Missing artist or track" });
+  }
+  if (!LASTFM_API_KEY) {
+    return res.json({ tags: [] });
+  }
+  try {
+    const data = await lastfmGet({
+      method: "track.getTopTags",
+      artist,
+      track,
+      autocorrect: "1",
+    });
+    const tags = (data.toptags?.tag || []).slice(0, 5).map((t) => t.name);
+    res.json({ tags });
+  } catch {
+    res.json({ tags: [] });
+  }
+});
+
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });

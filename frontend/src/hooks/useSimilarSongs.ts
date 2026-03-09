@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Song } from "../types/song.types";
 import { getSimilarTracks } from "../services/spotifyApi";
 
-export type SortOption = "best" | "release_date" | "popularity";
+export type SortOption = "best" | "release_date" | "popularity" | "alpha";
 
 export function useSimilarSongs(seedSong: Song | null, sortBy: SortOption) {
   const [songs, setSongs] = useState<(Song & { similarity: number })[]>([]);
@@ -46,6 +46,8 @@ function sortSongs(
       );
     case "popularity":
       return copy.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+    case "alpha":
+      return copy.sort((a, b) => a.name.localeCompare(b.name));
     case "best":
     default:
       return copy.sort((a, b) => b.similarity - a.similarity);

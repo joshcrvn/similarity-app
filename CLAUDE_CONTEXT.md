@@ -1,9 +1,9 @@
 # Claude Code Context Memory
 
 ## Project Status
-- Current Phase: 2 (complete) → Phase 3 (next)
+- Current Phase: 3 (in progress)
 - Last Updated: 2026-03-09
-- Latest Commit: fix/spotify-deprecated-endpoints
+- App name: "Similarity"
 
 ## What We've Built So Far
 
@@ -16,6 +16,16 @@
 - Node.js + Express backend in `backend/` proxying the Spotify Web API
 - Client Credentials auth flow (token cached in memory, auto-refreshed)
 - Git repo initialized, `.gitignore` and `backend/.env.example` created
+
+### Phase 3 - Enhanced UX (In Progress)
+- Last.fm integration working — real similarity via `track.getSimilar`
+- Global audio context (`AudioContext.tsx`) — single audio element, only one track plays at a time
+- Audio preview players: hover over any card to reveal play button; plays 30s clip
+- Vibe tags on seed song: Last.fm genre tags + decade + popularity (fetched from `/api/lastfm/tags`)
+- Filter panel: decade (Pre-2000 / 2000s / 2010s / 2020s) + popularity (Popular / Underground)
+- Sort: Best match / Most popular / Newest first / A–Z
+- Recently searched songs: stored in localStorage, shown on home page when search is focused
+- App rebranded to "Similarity"
 
 ### Phase 2 - Results & Similarity Engine (Complete)
 - `Results.tsx` page fetches seed track, drives similar-songs flow
