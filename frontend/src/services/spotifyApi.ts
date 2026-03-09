@@ -24,10 +24,13 @@ export async function getAudioFeatures(ids: string[]): Promise<AudioFeatures[]> 
   return res.data.audio_features as AudioFeatures[];
 }
 
-export async function getRecommendationsByTrack(seedId: string, limit = 30): Promise<Song[]> {
-  const res = await api.get("/recommendations", {
-    params: { seed_tracks: seedId, limit }
+export async function getSimilarTracks(
+  trackId: string,
+  limit = 30
+): Promise<(Song & { similarity: number })[]> {
+  const res = await api.get(`/similar-tracks/${trackId}`, {
+    params: { limit },
   });
-  return res.data.tracks as Song[];
+  return res.data.tracks as (Song & { similarity: number })[];
 }
 

@@ -141,6 +141,57 @@ app.get("/api/spotify/recommendations", async (req, res) => {
   }
 });
 
+// Replaces deprecated /recommendations + /audio-features endpoints.
+// Uses related-artists → top-tracks, which are still available.
+app.get("/api/spotify/similar-tracks/:trackId", async (req, res) => {
+  const { trackId } = req.params;
+  const limit = Math.min(Number(req.query.limit) || 30, 50);
+
+  try {
+    const track = await spotifyGet(`/tracks/${trackId}`);
+    const primaryArtistId = track.artists?.[0]?.id;
+    if (!primaryArtistId) {
+      return res.status(404).json({ error: "No artist found for track" });
+    }
+
+    const { artists: related } = await spotifyGet(
+      `/artists/${primaryArtistId}/related-artists`
+    );
+
+    // Take up to 6 related artists; Spotify orders them by similarity
+    const artistsToFetch = related.slice(0, 6);
+
+    const trackBatches = await Promise.all(
+      artistsToFetch.map(async (artist, idx) => {
+        try {
+          const { tracks } = await spotifyGet(
+            `/artists/${artist.id}/top-tracks`,
+            { market: "US" }
+          );
+          // Score: closest artist = ~95, each step down loses ~8 points
+          const similarity = Math.round(95 - idx * 8);
+          return tracks.slice(0, 5).map((t) => ({ ...t, similarity }));
+        } catch {
+          return [];
+        }
+      })
+    );
+
+    const all = trackBatches
+      .flat()
+      .filter((t) => t.id !== trackId)
+      .slice(0, limit);
+
+    res.json({ tracks: all });
+  } catch (err) {
+    const status = err.response?.status || 500;
+    res.status(status).json({
+      error: "Failed to fetch similar tracks",
+      details: err.response?.data,
+    });
+  }
+});
+
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
