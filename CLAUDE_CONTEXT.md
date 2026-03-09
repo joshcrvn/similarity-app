@@ -3,7 +3,7 @@
 ## Project Status
 - Current Phase: 2 (complete) → Phase 3 (next)
 - Last Updated: 2026-03-09
-- Latest Commit: (initial — not yet pushed)
+- Latest Commit: fix/spotify-deprecated-endpoints
 
 ## What We've Built So Far
 
@@ -108,13 +108,40 @@ Copy `backend/.env.example` → `backend/.env` and fill in real credentials.
 - No shadcn/ui components installed (was in the spec but not implemented; Tailwind used directly instead)
 - Audio preview: not all tracks have `preview_url` (Spotify limitation)
 - No virtual scrolling yet (needed if > 50 results)
+- Spotify credentials were accidentally exposed in chat — **new credentials generated and in .env**
+
+## CRITICAL: Spotify API Deprecations (Nov 2024)
+Spotify restricted the following endpoints to apps with special "extended access" approval.
+New apps get **403 Forbidden** — this is NOT a credentials issue.
+
+**Deprecated (do not use):**
+- ❌ `/v1/recommendations`
+- ❌ `/v1/audio-features`
+- ❌ `/v1/artists/{id}/related-artists`
+- ❌ `/v1/artists/{id}/top-tracks`
+
+**Still working (catalog APIs):**
+- ✅ `/v1/search`
+- ✅ `/v1/tracks/{id}` and `/v1/tracks?ids=...` (batch)
+- ✅ `/v1/artists/{id}` (genres, metadata)
+- ✅ `/v1/artists/{id}/albums`
+- ✅ `/v1/albums/{id}/tracks`
+
+**Our solution (`/api/spotify/similar-tracks/:trackId`):**
+1. Get seed track → primary artist ID
+2. Parallel fetch: artist genres + artist albums
+3. Fetch simplified tracks from each album
+4. Batch-fetch full track objects (`/v1/tracks?ids=...`) for popularity/art
+5. Genre search (`/search?q=genre:X`) for cross-artist discovery
+6. Similarity score: catalog tracks = 85%, genre-search tracks = 70%
 
 ## API Integration Status
-- Spotify Auth (Client Credentials): working
-- Search Endpoint (`/api/spotify/search`): working
-- Track Details (`/api/spotify/tracks/:id`): working
-- Audio Features (`/api/spotify/audio-features`): working
-- Recommendations (`/api/spotify/recommendations`): working
+- Spotify Auth (Client Credentials): ✅ working
+- Search (`/api/spotify/search`): ✅ working
+- Track Details (`/api/spotify/tracks/:id`): ✅ working
+- Similar Tracks (`/api/spotify/similar-tracks/:trackId`): ✅ working (catalog-based)
+- Audio Features: ❌ deprecated — removed
+- Recommendations: ❌ deprecated — removed
 
 ## Important Decisions Made
 - **Backend proxy** instead of direct Spotify calls from frontend — keeps credentials secure

@@ -141,53 +141,105 @@ app.get("/api/spotify/recommendations", async (req, res) => {
   }
 });
 
-// Replaces deprecated /recommendations + /audio-features endpoints.
-// Uses related-artists → top-tracks, which are still available.
+// Discovery endpoints (recommendations, related-artists, audio-features, top-tracks)
+// were deprecated by Spotify in Nov 2024 for new apps.
+// This endpoint uses only catalog APIs that are still available:
+//   /artists/{id}          → genres
+//   /artists/{id}/albums   → artist's catalog
+//   /albums/{id}/tracks    → simplified track list
+//   /tracks?ids=...        → batch full track objects
+//   /search                → genre-based cross-artist discovery
 app.get("/api/spotify/similar-tracks/:trackId", async (req, res) => {
   const { trackId } = req.params;
   const limit = Math.min(Number(req.query.limit) || 30, 50);
 
   try {
     const track = await spotifyGet(`/tracks/${trackId}`);
-    const primaryArtistId = track.artists?.[0]?.id;
-    if (!primaryArtistId) {
+    const primaryArtist = track.artists?.[0];
+    if (!primaryArtist) {
       return res.status(404).json({ error: "No artist found for track" });
     }
 
-    const { artists: related } = await spotifyGet(
-      `/artists/${primaryArtistId}/related-artists`
+    // Fetch artist details (genres) + artist albums in parallel
+    const [artistData, albumsData] = await Promise.all([
+      spotifyGet(`/artists/${primaryArtist.id}`),
+      spotifyGet(`/artists/${primaryArtist.id}/albums`, {
+        include_groups: "album,single",
+        limit: 6,
+        market: "US",
+      }).catch(() => ({ items: [] })),
+    ]);
+
+    const genres = artistData.genres || [];
+
+    // Fetch tracks for each album (simplified objects, no popularity/album image)
+    const albumTrackPages = await Promise.all(
+      albumsData.items.slice(0, 5).map((album) =>
+        spotifyGet(`/albums/${album.id}/tracks`, { limit: 8, market: "US" })
+          .then((d) => d.items || [])
+          .catch(() => [])
+      )
     );
 
-    // Take up to 6 related artists; Spotify orders them by similarity
-    const artistsToFetch = related.slice(0, 6);
-
-    const trackBatches = await Promise.all(
-      artistsToFetch.map(async (artist, idx) => {
-        try {
-          const { tracks } = await spotifyGet(
-            `/artists/${artist.id}/top-tracks`,
-            { market: "US" }
-          );
-          // Score: closest artist = ~95, each step down loses ~8 points
-          const similarity = Math.round(95 - idx * 8);
-          return tracks.slice(0, 5).map((t) => ({ ...t, similarity }));
-        } catch {
-          return [];
+    // Collect unique track IDs from the artist's catalog (excluding seed)
+    const seen = new Set([trackId]);
+    const catalogIds = [];
+    for (const tracks of albumTrackPages) {
+      for (const t of tracks) {
+        if (t.id && !seen.has(t.id)) {
+          seen.add(t.id);
+          catalogIds.push(t.id);
         }
-      })
-    );
+      }
+    }
 
-    const all = trackBatches
-      .flat()
-      .filter((t) => t.id !== trackId)
-      .slice(0, limit);
+    // Batch-fetch full track objects (popularity, preview_url, album art)
+    let catalogTracks = [];
+    if (catalogIds.length > 0) {
+      const { tracks: full } = await spotifyGet("/tracks", {
+        ids: catalogIds.slice(0, 50).join(","),
+        market: "US",
+      });
+      catalogTracks = (full || [])
+        .filter(Boolean)
+        .map((t) => ({ ...t, similarity: 85 }));
+    }
 
-    res.json({ tracks: all });
+    // Genre-based search: other artists in the same genre
+    let genreTracks = [];
+    if (genres.length > 0) {
+      const genreQuery = genres[0].replace(/\s+/g, "+");
+      const searchData = await spotifyGet("/search", {
+        q: `genre:${genreQuery}`,
+        type: "track",
+        limit: 20,
+        market: "US",
+      }).catch(() => ({ tracks: { items: [] } }));
+
+      genreTracks = (searchData.tracks?.items || [])
+        .filter(
+          (t) =>
+            !seen.has(t.id) &&
+            !t.artists.some((a) => a.id === primaryArtist.id)
+        )
+        .map((t) => {
+          seen.add(t.id);
+          return { ...t, similarity: 70 };
+        });
+    }
+
+    const results = [...catalogTracks, ...genreTracks].slice(0, limit);
+    res.json({ tracks: results });
   } catch (err) {
-    const status = err.response?.status || 500;
+    const status = err?.response?.status || 500;
+    console.error(
+      "[similar-tracks] error:",
+      err?.response?.status,
+      JSON.stringify(err?.response?.data)
+    );
     res.status(status).json({
       error: "Failed to fetch similar tracks",
-      details: err.response?.data,
+      details: err?.response?.data,
     });
   }
 });
