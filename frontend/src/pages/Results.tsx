@@ -20,9 +20,12 @@ function matchesFilters(song: Song, filters: FilterState): boolean {
     if (filters.decade === "2020s" && year < 2020) return false;
   }
   if (filters.popularity !== "all") {
-    const pop = song.popularity ?? 50;
+    const pop = song.popularity;
+    // If Spotify didn't return a popularity score, don't exclude the song
+    if (pop === undefined) return true;
+    // popular = 60+, underground = below 60 (complementary, no dead zone)
     if (filters.popularity === "popular" && pop < 60) return false;
-    if (filters.popularity === "underground" && pop >= 50) return false;
+    if (filters.popularity === "underground" && pop >= 60) return false;
   }
   return true;
 }

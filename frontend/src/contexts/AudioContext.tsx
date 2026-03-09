@@ -18,14 +18,34 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
 
   function toggle(id: string, url: string) {
     const audio = audioRef.current;
+
     if (playingId === id) {
       audio.pause();
       setPlayingId(null);
       return;
     }
+
+    if (!url) {
+      console.warn("[AudioContext] No preview URL for track:", id);
+      return;
+    }
+
+    audio.pause();
     audio.src = url;
-    audio.play().then(() => setPlayingId(id)).catch(() => {});
+    audio.load();
     audio.onended = () => setPlayingId(null);
+    audio.onerror = (e) => {
+      console.error("[AudioContext] Playback error:", e);
+      setPlayingId(null);
+    };
+
+    audio
+      .play()
+      .then(() => setPlayingId(id))
+      .catch((err: Error) => {
+        console.error("[AudioContext] play() rejected:", err.message, "\nURL:", url);
+        setPlayingId(null);
+      });
   }
 
   function stop() {
