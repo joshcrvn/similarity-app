@@ -1,9 +1,12 @@
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
 const dotenv = require("dotenv");
 
-dotenv.config();
+// Explicit path so .env is always loaded from backend/.env
+// regardless of which directory the process is started from
+dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -13,6 +16,9 @@ app.use(express.json());
 
 const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
 const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
+
+console.log("[env] SPOTIFY_CLIENT_ID loaded:", SPOTIFY_CLIENT_ID ? `${SPOTIFY_CLIENT_ID.slice(0, 6)}...` : "MISSING");
+console.log("[env] SPOTIFY_CLIENT_SECRET loaded:", SPOTIFY_CLIENT_SECRET ? "yes (hidden)" : "MISSING");
 
 if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
   console.warn(
@@ -141,99 +147,54 @@ app.get("/api/spotify/recommendations", async (req, res) => {
   }
 });
 
-// Discovery endpoints (recommendations, related-artists, audio-features, top-tracks)
-// were deprecated by Spotify in Nov 2024 for new apps.
-// This endpoint uses only catalog APIs that are still available:
-//   /artists/{id}          → genres
-//   /artists/{id}/albums   → artist's catalog
-//   /albums/{id}/tracks    → simplified track list
-//   /tracks?ids=...        → batch full track objects
-//   /search                → genre-based cross-artist discovery
+// Uses only /search and /tracks — the two endpoints confirmed working.
+// Spotify deprecated recommendations, audio-features, related-artists,
+// top-tracks, and artist/album browsing for new apps in Nov 2024.
 app.get("/api/spotify/similar-tracks/:trackId", async (req, res) => {
   const { trackId } = req.params;
   const limit = Math.min(Number(req.query.limit) || 30, 50);
 
   try {
+    // Step 1: get seed track (confirmed working)
     const track = await spotifyGet(`/tracks/${trackId}`);
-    const primaryArtist = track.artists?.[0];
-    if (!primaryArtist) {
+    const artistName = track.artists?.[0]?.name;
+    const trackName = track.name;
+
+    if (!artistName) {
       return res.status(404).json({ error: "No artist found for track" });
     }
 
-    // Fetch artist details (genres) + artist albums in parallel
-    const [artistData, albumsData] = await Promise.all([
-      spotifyGet(`/artists/${primaryArtist.id}`),
-      spotifyGet(`/artists/${primaryArtist.id}/albums`, {
-        include_groups: "album,single",
-        limit: 6,
-        market: "US",
-      }).catch(() => ({ items: [] })),
-    ]);
+    // Step 2: search for more tracks by the same artist (similarity ~85%)
+    const artistSearch = await spotifyGet("/search", {
+      q: `artist:${artistName}`,
+      type: "track",
+      limit: 30,
+      market: "US",
+    });
+    const artistTracks = (artistSearch.tracks?.items || [])
+      .filter((t) => t.id !== trackId)
+      .map((t) => ({ ...t, similarity: 85 }));
 
-    const genres = artistData.genres || [];
+    // Step 3: search by track name to surface versions/similar songs (~70%)
+    const nameSearch = await spotifyGet("/search", {
+      q: trackName,
+      type: "track",
+      limit: 15,
+      market: "US",
+    });
 
-    // Fetch tracks for each album (simplified objects, no popularity/album image)
-    const albumTrackPages = await Promise.all(
-      albumsData.items.slice(0, 5).map((album) =>
-        spotifyGet(`/albums/${album.id}/tracks`, { limit: 8, market: "US" })
-          .then((d) => d.items || [])
-          .catch(() => [])
-      )
-    );
+    const seen = new Set([trackId, ...artistTracks.map((t) => t.id)]);
+    const nameTracks = (nameSearch.tracks?.items || [])
+      .filter((t) => !seen.has(t.id))
+      .map((t) => ({ ...t, similarity: 70 }));
 
-    // Collect unique track IDs from the artist's catalog (excluding seed)
-    const seen = new Set([trackId]);
-    const catalogIds = [];
-    for (const tracks of albumTrackPages) {
-      for (const t of tracks) {
-        if (t.id && !seen.has(t.id)) {
-          seen.add(t.id);
-          catalogIds.push(t.id);
-        }
-      }
-    }
-
-    // Batch-fetch full track objects (popularity, preview_url, album art)
-    let catalogTracks = [];
-    if (catalogIds.length > 0) {
-      const { tracks: full } = await spotifyGet("/tracks", {
-        ids: catalogIds.slice(0, 50).join(","),
-        market: "US",
-      });
-      catalogTracks = (full || [])
-        .filter(Boolean)
-        .map((t) => ({ ...t, similarity: 85 }));
-    }
-
-    // Genre-based search: other artists in the same genre
-    let genreTracks = [];
-    if (genres.length > 0) {
-      const genreQuery = genres[0].replace(/\s+/g, "+");
-      const searchData = await spotifyGet("/search", {
-        q: `genre:${genreQuery}`,
-        type: "track",
-        limit: 20,
-        market: "US",
-      }).catch(() => ({ tracks: { items: [] } }));
-
-      genreTracks = (searchData.tracks?.items || [])
-        .filter(
-          (t) =>
-            !seen.has(t.id) &&
-            !t.artists.some((a) => a.id === primaryArtist.id)
-        )
-        .map((t) => {
-          seen.add(t.id);
-          return { ...t, similarity: 70 };
-        });
-    }
-
-    const results = [...catalogTracks, ...genreTracks].slice(0, limit);
+    const results = [...artistTracks, ...nameTracks].slice(0, limit);
+    console.log(`[similar-tracks] returning ${results.length} tracks for "${trackName}" by ${artistName}`);
     res.json({ tracks: results });
   } catch (err) {
     const status = err?.response?.status || 500;
     console.error(
-      "[similar-tracks] error:",
+      "[similar-tracks] Spotify error:",
       err?.response?.status,
       JSON.stringify(err?.response?.data)
     );
