@@ -99,6 +99,7 @@ music-similarity/
 SPOTIFY_CLIENT_ID=<from Spotify Developer Dashboard>
 SPOTIFY_CLIENT_SECRET=<from Spotify Developer Dashboard>
 PORT=4000
+LASTFM_API_KEY=<from https://www.last.fm/api/account/create>
 ```
 Copy `backend/.env.example` → `backend/.env` and fill in real credentials.
 
@@ -109,6 +110,14 @@ Copy `backend/.env.example` → `backend/.env` and fill in real credentials.
 - Audio preview: not all tracks have `preview_url` (Spotify limitation)
 - No virtual scrolling yet (needed if > 50 results)
 - Spotify credentials were accidentally exposed in chat — **new credentials generated and in .env**
+
+## Last.fm Integration (Primary Similarity Source)
+- `track.getSimilar` returns up to 20 similar tracks with a `match` score (0–1)
+- Similarity is collaborative filtering (listener behaviour) — much better than text matching
+- Free API key, no approval: https://www.last.fm/api/account/create
+- Add `LASTFM_API_KEY` to `backend/.env`
+- Backend cross-references each Last.fm result with Spotify (search) to get album art + preview URL
+- Falls back to search-based matching if key not set or Last.fm returns no results
 
 ## CRITICAL: Spotify API Deprecations (Nov 2024)
 Spotify restricted the following endpoints to apps with special "extended access" approval.

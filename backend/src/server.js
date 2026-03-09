@@ -14,16 +14,16 @@ const PORT = process.env.PORT || 4000;
 app.use(cors());
 app.use(express.json());
 
-const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
+const SPOTIFY_CLIENT_ID     = process.env.SPOTIFY_CLIENT_ID;
 const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET;
+const LASTFM_API_KEY        = process.env.LASTFM_API_KEY;
 
-console.log("[env] SPOTIFY_CLIENT_ID loaded:", SPOTIFY_CLIENT_ID ? `${SPOTIFY_CLIENT_ID.slice(0, 6)}...` : "MISSING");
-console.log("[env] SPOTIFY_CLIENT_SECRET loaded:", SPOTIFY_CLIENT_SECRET ? "yes (hidden)" : "MISSING");
+console.log("[env] SPOTIFY_CLIENT_ID:    ", SPOTIFY_CLIENT_ID     ? `${SPOTIFY_CLIENT_ID.slice(0, 6)}...` : "MISSING");
+console.log("[env] SPOTIFY_CLIENT_SECRET:", SPOTIFY_CLIENT_SECRET ? "yes (hidden)"                        : "MISSING");
+console.log("[env] LASTFM_API_KEY:       ", LASTFM_API_KEY        ? `${LASTFM_API_KEY.slice(0, 6)}...`   : "not set — will use search fallback");
 
 if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
-  console.warn(
-    "[WARN] SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET not set. Spotify API calls will fail until configured.",
-  );
+  console.warn("[WARN] Spotify credentials missing. API calls will fail.");
 }
 
 let cachedToken = null;
@@ -53,6 +53,16 @@ async function getAccessToken() {
   cachedToken = res.data.access_token;
   cachedTokenExpiresAt = now + res.data.expires_in * 1000;
   return cachedToken;
+}
+
+async function lastfmGet(params) {
+  const res = await axios.get("https://ws.audioscrobbler.com/2.0/", {
+    params: { ...params, api_key: LASTFM_API_KEY, format: "json" },
+  });
+  if (res.data.error) {
+    throw new Error(`Last.fm error ${res.data.error}: ${res.data.message}`);
+  }
+  return res.data;
 }
 
 async function spotifyGet(path, params = {}) {
@@ -147,94 +157,90 @@ app.get("/api/spotify/recommendations", async (req, res) => {
   }
 });
 
-/**
- * Weighted audio feature similarity, returns 0–100.
- * Uses the same weights as the original similarityCalculator.ts.
- */
-function computeAudioSimilarity(seed, candidate) {
-  const tempoDiff = Math.abs(seed.tempo - candidate.tempo);
-  const parts = [
-    [1 - Math.min(tempoDiff, 120) / 120,                       1.0], // tempo
-    [1 - Math.abs(seed.energy        - candidate.energy),       1.5], // energy
-    [1 - Math.abs(seed.danceability  - candidate.danceability), 1.0], // danceability
-    [1 - Math.abs(seed.valence       - candidate.valence),      1.2], // mood
-    [1 - Math.abs(seed.acousticness  - candidate.acousticness), 0.8], // acousticness
-    [seed.key  === candidate.key  ? 1 : 0.5,                    0.5], // key
-    [seed.mode === candidate.mode ? 1 : 0.5,                    0.3], // mode
-  ];
-  const totalWeight = parts.reduce((s, [, w]) => s + w, 0);
-  const score      = parts.reduce((s, [v, w]) => s + v * w, 0);
-  return Math.round((score / totalWeight) * 100);
-}
-
 // Similar tracks endpoint.
-// 1. Builds a candidate pool via search (confirmed working).
-// 2. Attempts to score candidates with real audio features.
-//    If /v1/audio-features returns 403/error, falls back to
-//    search-rank scores so the page still loads.
+//
+// Path A (preferred): Last.fm track.getSimilar → similarity scores based on
+//   real listener behaviour → cross-reference each result with Spotify for
+//   album art, preview URL, and track ID.
+//
+// Path B (fallback): two Spotify searches (artist name + track name) with
+//   static similarity scores. Used when LASTFM_API_KEY is not set or Last.fm
+//   returns no results for the track.
 app.get("/api/spotify/similar-tracks/:trackId", async (req, res) => {
   const { trackId } = req.params;
 
   try {
-    const track = await spotifyGet(`/tracks/${trackId}`);
+    const track      = await spotifyGet(`/tracks/${trackId}`);
     const artistName = track.artists?.[0]?.name;
     const trackName  = track.name;
     if (!artistName) {
       return res.status(404).json({ error: "No artist found for track" });
     }
 
-    // Build candidate pool with two searches in parallel
+    // ── Path A: Last.fm ──────────────────────────────────────────────────
+    if (LASTFM_API_KEY) {
+      try {
+        const lfmData = await lastfmGet({
+          method:      "track.getSimilar",
+          artist:      artistName,
+          track:       trackName,
+          limit:       "20",
+          autocorrect: "1",
+        });
+
+        const similar = lfmData.similartracks?.track || [];
+
+        if (similar.length > 0) {
+          // Cross-reference each Last.fm track with Spotify in parallel
+          const enriched = await Promise.all(
+            similar.map(async (lfm) => {
+              const similarity = Math.round(Number(lfm.match) * 100);
+              try {
+                const q    = `${lfm.artist?.name || ""} ${lfm.name}`;
+                const data = await spotifyGet("/search", { q, type: "track" });
+                const hit  = data.tracks?.items?.[0];
+                if (hit && hit.id !== trackId) {
+                  return { ...hit, similarity };
+                }
+              } catch {
+                // skip tracks that can't be resolved on Spotify
+              }
+              return null;
+            })
+          );
+
+          const results = enriched.filter(Boolean);
+          console.log(`[similar-tracks] "${trackName}" | source: Last.fm | ${results.length} tracks`);
+          return res.json({ tracks: results });
+        }
+
+        console.warn(`[similar-tracks] Last.fm returned no results for "${trackName}" — using search fallback`);
+      } catch (lfmErr) {
+        console.warn("[similar-tracks] Last.fm error:", lfmErr.message, "— using search fallback");
+      }
+    }
+
+    // ── Path B: search-based fallback ────────────────────────────────────
     const [artistSearch, nameSearch] = await Promise.all([
       spotifyGet("/search", { q: artistName, type: "track" }),
       spotifyGet("/search", { q: trackName,  type: "track" }),
     ]);
 
     const seen = new Set([trackId]);
-    const candidates = [];
-    for (const t of [
-      ...(artistSearch.tracks?.items || []),
-      ...(nameSearch.tracks?.items  || []),
+    const results = [];
+    for (const [items, score] of [
+      [artistSearch.tracks?.items || [], 85],
+      [nameSearch.tracks?.items   || [], 70],
     ]) {
-      if (!seen.has(t.id)) {
-        seen.add(t.id);
-        candidates.push(t);
+      for (const t of items) {
+        if (!seen.has(t.id)) {
+          seen.add(t.id);
+          results.push({ ...t, similarity: score });
+        }
       }
     }
 
-    // Attempt real audio-feature scoring
-    const allIds = [trackId, ...candidates.map((t) => t.id)];
-    let featuresMap = new Map();
-    let usingAudioFeatures = false;
-
-    try {
-      const featData = await spotifyGet("/audio-features", {
-        ids: allIds.slice(0, 100).join(","),
-      });
-      for (const f of featData.audio_features || []) {
-        if (f) featuresMap.set(f.id, f);
-      }
-      usingAudioFeatures = featuresMap.size > 1;
-    } catch {
-      console.warn("[similar-tracks] /audio-features unavailable — using search-rank scores");
-    }
-
-    const seedFeatures = featuresMap.get(trackId);
-
-    const results = candidates.map((t, idx) => {
-      const cf = featuresMap.get(t.id);
-      const similarity =
-        usingAudioFeatures && seedFeatures && cf
-          ? computeAudioSimilarity(seedFeatures, cf)
-          : idx < (artistSearch.tracks?.items?.length || 0) ? 85 : 70;
-      return { ...t, similarity };
-    });
-
-    results.sort((a, b) => b.similarity - a.similarity);
-
-    console.log(
-      `[similar-tracks] ${results.length} tracks for "${trackName}" | ` +
-      `audio-features: ${usingAudioFeatures}`
-    );
+    console.log(`[similar-tracks] "${trackName}" | source: search fallback | ${results.length} tracks`);
     res.json({ tracks: results.slice(0, 30) });
   } catch (err) {
     const status = err?.response?.status || 500;
