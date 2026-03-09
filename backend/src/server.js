@@ -147,59 +147,99 @@ app.get("/api/spotify/recommendations", async (req, res) => {
   }
 });
 
-// Uses only /search and /tracks — the two endpoints confirmed working.
-// Spotify deprecated recommendations, audio-features, related-artists,
-// top-tracks, and artist/album browsing for new apps in Nov 2024.
+/**
+ * Weighted audio feature similarity, returns 0–100.
+ * Uses the same weights as the original similarityCalculator.ts.
+ */
+function computeAudioSimilarity(seed, candidate) {
+  const tempoDiff = Math.abs(seed.tempo - candidate.tempo);
+  const parts = [
+    [1 - Math.min(tempoDiff, 120) / 120,                       1.0], // tempo
+    [1 - Math.abs(seed.energy        - candidate.energy),       1.5], // energy
+    [1 - Math.abs(seed.danceability  - candidate.danceability), 1.0], // danceability
+    [1 - Math.abs(seed.valence       - candidate.valence),      1.2], // mood
+    [1 - Math.abs(seed.acousticness  - candidate.acousticness), 0.8], // acousticness
+    [seed.key  === candidate.key  ? 1 : 0.5,                    0.5], // key
+    [seed.mode === candidate.mode ? 1 : 0.5,                    0.3], // mode
+  ];
+  const totalWeight = parts.reduce((s, [, w]) => s + w, 0);
+  const score      = parts.reduce((s, [v, w]) => s + v * w, 0);
+  return Math.round((score / totalWeight) * 100);
+}
+
+// Similar tracks endpoint.
+// 1. Builds a candidate pool via search (confirmed working).
+// 2. Attempts to score candidates with real audio features.
+//    If /v1/audio-features returns 403/error, falls back to
+//    search-rank scores so the page still loads.
 app.get("/api/spotify/similar-tracks/:trackId", async (req, res) => {
   const { trackId } = req.params;
-  const limit = Math.min(Number(req.query.limit) || 30, 50);
 
   try {
-    // Step 1: get seed track (confirmed working)
     const track = await spotifyGet(`/tracks/${trackId}`);
     const artistName = track.artists?.[0]?.name;
-    const trackName = track.name;
-
+    const trackName  = track.name;
     if (!artistName) {
       return res.status(404).json({ error: "No artist found for track" });
     }
 
-    // Step 2: search for more tracks by the same artist (similarity ~85%)
-    console.log(`[similar-tracks] searching for artist: "${artistName}"`);
-    const artistSearch = await spotifyGet("/search", {
-      q: artistName,
-      type: "track",
+    // Build candidate pool with two searches in parallel
+    const [artistSearch, nameSearch] = await Promise.all([
+      spotifyGet("/search", { q: artistName, type: "track" }),
+      spotifyGet("/search", { q: trackName,  type: "track" }),
+    ]);
+
+    const seen = new Set([trackId]);
+    const candidates = [];
+    for (const t of [
+      ...(artistSearch.tracks?.items || []),
+      ...(nameSearch.tracks?.items  || []),
+    ]) {
+      if (!seen.has(t.id)) {
+        seen.add(t.id);
+        candidates.push(t);
+      }
+    }
+
+    // Attempt real audio-feature scoring
+    const allIds = [trackId, ...candidates.map((t) => t.id)];
+    let featuresMap = new Map();
+    let usingAudioFeatures = false;
+
+    try {
+      const featData = await spotifyGet("/audio-features", {
+        ids: allIds.slice(0, 100).join(","),
+      });
+      for (const f of featData.audio_features || []) {
+        if (f) featuresMap.set(f.id, f);
+      }
+      usingAudioFeatures = featuresMap.size > 1;
+    } catch {
+      console.warn("[similar-tracks] /audio-features unavailable — using search-rank scores");
+    }
+
+    const seedFeatures = featuresMap.get(trackId);
+
+    const results = candidates.map((t, idx) => {
+      const cf = featuresMap.get(t.id);
+      const similarity =
+        usingAudioFeatures && seedFeatures && cf
+          ? computeAudioSimilarity(seedFeatures, cf)
+          : idx < (artistSearch.tracks?.items?.length || 0) ? 85 : 70;
+      return { ...t, similarity };
     });
-    const artistTracks = (artistSearch.tracks?.items || [])
-      .filter((t) => t.id !== trackId)
-      .map((t) => ({ ...t, similarity: 85 }));
 
-    // Step 3: search by track name to surface versions/similar songs (~70%)
-    console.log(`[similar-tracks] searching for track: "${trackName}"`);
-    const nameSearch = await spotifyGet("/search", {
-      q: trackName,
-      type: "track",
-    });
+    results.sort((a, b) => b.similarity - a.similarity);
 
-    const seen = new Set([trackId, ...artistTracks.map((t) => t.id)]);
-    const nameTracks = (nameSearch.tracks?.items || [])
-      .filter((t) => !seen.has(t.id))
-      .map((t) => ({ ...t, similarity: 70 }));
-
-    const results = [...artistTracks, ...nameTracks].slice(0, limit);
-    console.log(`[similar-tracks] returning ${results.length} tracks for "${trackName}" by ${artistName}`);
-    res.json({ tracks: results });
+    console.log(
+      `[similar-tracks] ${results.length} tracks for "${trackName}" | ` +
+      `audio-features: ${usingAudioFeatures}`
+    );
+    res.json({ tracks: results.slice(0, 30) });
   } catch (err) {
     const status = err?.response?.status || 500;
-    console.error(
-      "[similar-tracks] Spotify error:",
-      err?.response?.status,
-      JSON.stringify(err?.response?.data)
-    );
-    res.status(status).json({
-      error: "Failed to fetch similar tracks",
-      details: err?.response?.data,
-    });
+    console.error("[similar-tracks] error:", err?.response?.status, JSON.stringify(err?.response?.data));
+    res.status(status).json({ error: "Failed to fetch similar tracks", details: err?.response?.data });
   }
 });
 
