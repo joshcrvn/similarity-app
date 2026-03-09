@@ -1,3 +1,4 @@
+import { Play } from "lucide-react";
 import type { Song } from "../../types/song.types";
 import AudioPlayer from "../shared/AudioPlayer";
 
@@ -22,11 +23,18 @@ export default function SimilarSongCard({ song, onViewSimilar }: Props) {
         ) : (
           <div className="w-full aspect-square bg-neutral-800" />
         )}
-        {song.preview_url && (
-          <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+        <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+          {song.preview_url ? (
             <AudioPlayer trackId={song.id} previewUrl={song.preview_url} compact />
-          </div>
-        )}
+          ) : (
+            <div
+              className="w-7 h-7 rounded-full bg-neutral-800/80 flex items-center justify-center cursor-not-allowed"
+              title="No preview available"
+            >
+              <Play className="w-3 h-3 text-neutral-600" />
+            </div>
+          )}
+        </div>
         <div className="absolute top-2 left-2">
           <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-black/60 text-emerald-400">
             {song.similarity}%
