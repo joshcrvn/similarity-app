@@ -165,10 +165,11 @@ app.get("/api/spotify/similar-tracks/:trackId", async (req, res) => {
     }
 
     // Step 2: search for more tracks by the same artist (similarity ~85%)
+    // Note: Spotify requires limit as a string, not a number
     const artistSearch = await spotifyGet("/search", {
       q: `artist:${artistName}`,
       type: "track",
-      limit: 20,
+      limit: "20",
     });
     const artistTracks = (artistSearch.tracks?.items || [])
       .filter((t) => t.id !== trackId)
@@ -178,7 +179,7 @@ app.get("/api/spotify/similar-tracks/:trackId", async (req, res) => {
     const nameSearch = await spotifyGet("/search", {
       q: trackName,
       type: "track",
-      limit: 10,
+      limit: "10",
     });
 
     const seen = new Set([trackId, ...artistTracks.map((t) => t.id)]);
