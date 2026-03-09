@@ -168,8 +168,7 @@ app.get("/api/spotify/similar-tracks/:trackId", async (req, res) => {
     const artistSearch = await spotifyGet("/search", {
       q: `artist:${artistName}`,
       type: "track",
-      limit: 30,
-      market: "US",
+      limit: 20,
     });
     const artistTracks = (artistSearch.tracks?.items || [])
       .filter((t) => t.id !== trackId)
@@ -179,8 +178,7 @@ app.get("/api/spotify/similar-tracks/:trackId", async (req, res) => {
     const nameSearch = await spotifyGet("/search", {
       q: trackName,
       type: "track",
-      limit: 15,
-      market: "US",
+      limit: 10,
     });
 
     const seen = new Set([trackId, ...artistTracks.map((t) => t.id)]);
